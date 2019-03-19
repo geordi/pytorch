@@ -1,7 +1,8 @@
-#include "THCUNN.h"
-#include "THCHalf.h"
-#include "THCHalfAutoNumerics.cuh"
-#include "THCAtomics.cuh"
+#include <THCUNN/THCUNN.h>
+#include <TH/THHalf.h>
+#include <THCUNN/THCHalfAutoNumerics.cuh>
+#include <THC/THCAtomics.cuh>
+#include <THC/THCTensor.hpp>
 
 #define CUDA_MAX_THREADS 1024   // this is safe, in reality 256 is our limit
 
@@ -79,7 +80,7 @@ __global__ void cunn_VolumetricAdaptiveMaxPooling_updateOutput_kernel(
         for(ih = 0; ih < kH; ++ih) {
           for(iw = 0; iw < kW; ++iw) {
             T val = ptr_input[ih*istrideH + iw*istrideW];
-            if (val > max) {
+            if ((val > max) || THCNumerics<T>::isnan(val)) {
               max = val;
               argmax = (it+istartT)*isizeH*isizeW + (ih+istartH)*isizeW + iw+istartW;
             }
@@ -89,7 +90,7 @@ __global__ void cunn_VolumetricAdaptiveMaxPooling_updateOutput_kernel(
       }
       // Update output and argmax
       *ptr_output = max;
-      *ptr_ind = argmax + TH_INDEX_BASE;
+      *ptr_ind = argmax;
     }
   }
 }
@@ -141,7 +142,7 @@ __global__ void cunn_VolumetricAdaptiveMaxPooling_updateGradInput_kernel(
       T *ptr_gradOutput = gradOutput_dt + oh*osizeW + ow;
       THCIndex_t *ptr_ind = indices_dt + oh*osizeW + ow;
       T grad_delta = *ptr_gradOutput;
-      int argmax = (*ptr_ind) - TH_INDEX_BASE;
+      int argmax = (*ptr_ind);
       gradInput_d[argmax] += grad_delta;
     }
   }
@@ -194,13 +195,13 @@ __global__ void cunn_atomic_VolumetricAdaptiveMaxPooling_updateGradInput_kernel(
       T *ptr_gradOutput = gradOutput_dt + oh*osizeW + ow;
       THCIndex_t *ptr_ind = indices_dt + oh*osizeW + ow;
       T grad_delta = *ptr_gradOutput;
-      int64_t argmax = (*ptr_ind) - TH_INDEX_BASE;
+      int64_t argmax = (*ptr_ind);
       atomicAdd(&(gradInput_d[argmax]), grad_delta);
     }
   }
 }
 
-#include "generic/VolumetricAdaptiveMaxPooling.cu"
-#include "THCGenerateFloatTypes.h"
+#include <THCUNN/generic/VolumetricAdaptiveMaxPooling.cu>
+#include <THC/THCGenerateFloatTypes.h>
 
 #undef CUDA_MAX_THREADS

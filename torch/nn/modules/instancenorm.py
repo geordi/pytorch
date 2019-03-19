@@ -1,16 +1,52 @@
 from .batchnorm import _BatchNorm
 from .. import functional as F
+from ..._jit_internal import weak_module, weak_script_method
 
 
 class _InstanceNorm(_BatchNorm):
+    __constants__ = ['running_mean', 'running_var', 'weight', 'bias',
+                     'track_running_stats', 'momentum', 'eps']
+
     def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=False,
                  track_running_stats=False):
         super(_InstanceNorm, self).__init__(
             num_features, eps, momentum, affine, track_running_stats)
 
+    @weak_script_method
     def _check_input_dim(self, input):
-        return NotImplemented
+        raise NotImplementedError
 
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        version = local_metadata.get('version', None)
+        # at version 1: removed running_mean and running_var when
+        # track_running_stats=False (default)
+        if version is None and not self.track_running_stats:
+            running_stats_keys = []
+            for name in ('running_mean', 'running_var'):
+                key = prefix + name
+                if key in state_dict:
+                    running_stats_keys.append(key)
+            if len(running_stats_keys) > 0:
+                error_msgs.append(
+                    'Unexpected running stats buffer(s) {names} for {klass} '
+                    'with track_running_stats=False. If state_dict is a '
+                    'checkpoint saved before 0.4.0, this may be expected '
+                    'because {klass} does not track running stats by default '
+                    'since 0.4.0. Please remove these keys from state_dict. If '
+                    'the running stats are actually needed, instead set '
+                    'track_running_stats=True in {klass} to enable them. See '
+                    'the documentation of {klass} for details.'
+                    .format(names=" and ".join('"{}"'.format(k) for k in running_stats_keys),
+                            klass=self.__class__.__name__))
+                for key in running_stats_keys:
+                    state_dict.pop(key)
+
+        super(_InstanceNorm, self)._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict,
+            missing_keys, unexpected_keys, error_msgs)
+
+    @weak_script_method
     def forward(self, input):
         self._check_input_dim(input)
 
@@ -19,18 +55,19 @@ class _InstanceNorm(_BatchNorm):
             self.training or not self.track_running_stats, self.momentum, self.eps)
 
 
+@weak_module
 class InstanceNorm1d(_InstanceNorm):
-    r"""Applies Instance Normalization over a 2d or 3d input (a mini-batch of 1d
+    r"""Applies Instance Normalization over a 2D or 3D input (a mini-batch of 1D
     inputs with optional additional channel dimension) as described in the paper
     `Instance Normalization: The Missing Ingredient for Fast Stylization`_ .
 
     .. math::
 
-        y = \frac{x - mean[x]}{ \sqrt{Var[x]} + \epsilon} * gamma + beta
+        y = \frac{x - \mathrm{E}[x]}{ \sqrt{\mathrm{Var}[x] + \epsilon}} * \gamma + \beta
 
     The mean and standard-deviation are calculated per-dimension separately
-    for each object in a mini-batch. Gamma and beta are learnable parameter vectors
-    of size C (where C is the input size) if :attr:`affine` is ``True``.
+    for each object in a mini-batch. :math:`\gamma` and :math:`\beta` are learnable parameter vectors
+    of size `C` (where `C` is the input size) if :attr:`affine` is ``True``.
 
     By default, this layer uses instance statistics computed from input data in
     both training and evaluation modes.
@@ -44,9 +81,18 @@ class InstanceNorm1d(_InstanceNorm):
         This :attr:`momentum` argument is different from one used in optimizer
         classes and the conventional notion of momentum. Mathematically, the
         update rule for running statistics here is
-        :math:`\hat{x}_\text{new} = (1 - \text{momentum}) \times \hat{x}_\text{new} + \text{momemtum} \times x_t`,
+        :math:`\hat{x}_\text{new} = (1 - \text{momentum}) \times \hat{x} + \text{momemtum} \times x_t`,
         where :math:`\hat{x}` is the estimated statistic and :math:`x_t` is the
         new observed value.
+
+    .. note::
+        :class:`InstanceNorm1d` and :class:`LayerNorm` are very similar, but
+        have some subtle differences. :class:`InstanceNorm1d` is applied
+        on each channel of channeled data like multidimensional time series, but
+        :class:`LayerNorm` is usually applied on entire sample and often in NLP
+        tasks. Additionaly, :class:`LayerNorm` applies elementwise affine
+        transform, while :class:`InstanceNorm1d` usually don't apply affine
+        transform.
 
     Args:
         num_features: :math:`C` from an expected input of size
@@ -54,7 +100,8 @@ class InstanceNorm1d(_InstanceNorm):
         eps: a value added to the denominator for numerical stability. Default: 1e-5
         momentum: the value used for the running_mean and running_var computation. Default: 0.1
         affine: a boolean value that when set to ``True``, this module has
-            learnable affine parameters. Default: ``True``
+            learnable affine parameters, initialized the same way as done for batch normalization.
+            Default: ``False``.
         track_running_stats: a boolean value that when set to ``True``, this
             module tracks the running mean and variance, and when set to ``False``,
             this module does not track such statistics and always uses batch
@@ -64,36 +111,39 @@ class InstanceNorm1d(_InstanceNorm):
         - Input: :math:`(N, C, L)`
         - Output: :math:`(N, C, L)` (same shape as input)
 
-    Examples:
+    Examples::
+
         >>> # Without Learnable Parameters
         >>> m = nn.InstanceNorm1d(100)
         >>> # With Learnable Parameters
         >>> m = nn.InstanceNorm1d(100, affine=True)
-        >>> input = autograd.Variable(torch.randn(20, 100, 40))
+        >>> input = torch.randn(20, 100, 40)
         >>> output = m(input)
 
     .. _`Instance Normalization: The Missing Ingredient for Fast Stylization`:
         https://arxiv.org/abs/1607.08022
     """
 
+    @weak_script_method
     def _check_input_dim(self, input):
-        if input.dim() != 3:
-            raise ValueError('expected 3D input (got {}D input)'
+        if input.dim() != 2 and input.dim() != 3:
+            raise ValueError('expected 2D or 3D input (got {}D input)'
                              .format(input.dim()))
 
 
+@weak_module
 class InstanceNorm2d(_InstanceNorm):
-    r"""Applies Instance Normalization over a 4d input (a mini-batch of 2d inputs
+    r"""Applies Instance Normalization over a 4D input (a mini-batch of 2D inputs
     with additional channel dimension) as described in the paper
     `Instance Normalization: The Missing Ingredient for Fast Stylization`_ .
 
     .. math::
 
-        y = \frac{x - mean[x]}{ \sqrt{Var[x]} + \epsilon} * gamma + beta
+        y = \frac{x - \mathrm{E}[x]}{ \sqrt{\mathrm{Var}[x] + \epsilon}} * \gamma + \beta
 
     The mean and standard-deviation are calculated per-dimension separately
-    for each object in a mini-batch. Gamma and beta are learnable parameter vectors
-    of size C (where C is the input size) if :attr:`affine` is ``True``.
+    for each object in a mini-batch. :math:`\gamma` and :math:`\beta` are learnable parameter vectors
+    of size `C` (where `C` is the input size) if :attr:`affine` is ``True``.
 
     By default, this layer uses instance statistics computed from input data in
     both training and evaluation modes.
@@ -107,9 +157,18 @@ class InstanceNorm2d(_InstanceNorm):
         This :attr:`momentum` argument is different from one used in optimizer
         classes and the conventional notion of momentum. Mathematically, the
         update rule for running statistics here is
-        :math:`\hat{x}_\text{new} = (1 - \text{momentum}) \times \hat{x}_\text{new} + \text{momemtum} \times x_t`,
+        :math:`\hat{x}_\text{new} = (1 - \text{momentum}) \times \hat{x} + \text{momemtum} \times x_t`,
         where :math:`\hat{x}` is the estimated statistic and :math:`x_t` is the
         new observed value.
+
+    .. note::
+        :class:`InstanceNorm2d` and :class:`LayerNorm` are very similar, but
+        have some subtle differences. :class:`InstanceNorm2d` is applied
+        on each channel of channeled data like RGB images, but
+        :class:`LayerNorm` is usually applied on entire sample and often in NLP
+        tasks. Additionaly, :class:`LayerNorm` applies elementwise affine
+        transform, while :class:`InstanceNorm2d` usually don't apply affine
+        transform.
 
     Args:
         num_features: :math:`C` from an expected input of size
@@ -117,7 +176,8 @@ class InstanceNorm2d(_InstanceNorm):
         eps: a value added to the denominator for numerical stability. Default: 1e-5
         momentum: the value used for the running_mean and running_var computation. Default: 0.1
         affine: a boolean value that when set to ``True``, this module has
-            learnable affine parameters. Default: ``True``
+            learnable affine parameters, initialized the same way as done for batch normalization.
+            Default: ``False``.
         track_running_stats: a boolean value that when set to ``True``, this
             module tracks the running mean and variance, and when set to ``False``,
             this module does not track such statistics and always uses batch
@@ -127,35 +187,38 @@ class InstanceNorm2d(_InstanceNorm):
         - Input: :math:`(N, C, H, W)`
         - Output: :math:`(N, C, H, W)` (same shape as input)
 
-    Examples:
+    Examples::
+
         >>> # Without Learnable Parameters
         >>> m = nn.InstanceNorm2d(100)
         >>> # With Learnable Parameters
         >>> m = nn.InstanceNorm2d(100, affine=True)
-        >>> input = autograd.Variable(torch.randn(20, 100, 35, 45))
+        >>> input = torch.randn(20, 100, 35, 45)
         >>> output = m(input)
 
     .. _`Instance Normalization: The Missing Ingredient for Fast Stylization`:
         https://arxiv.org/abs/1607.08022
     """
 
+    @weak_script_method
     def _check_input_dim(self, input):
         if input.dim() != 4:
             raise ValueError('expected 4D input (got {}D input)'
                              .format(input.dim()))
 
 
+@weak_module
 class InstanceNorm3d(_InstanceNorm):
-    r"""Applies Instance Normalization over a 5d input (a mini-batch of 3d inputs
+    r"""Applies Instance Normalization over a 5D input (a mini-batch of 3D inputs
     with additional channel dimension) as described in the paper
     `Instance Normalization: The Missing Ingredient for Fast Stylization`_ .
 
     .. math::
 
-        y = \frac{x - mean[x]}{ \sqrt{Var[x]} + \epsilon} * gamma + beta
+        y = \frac{x - \mathrm{E}[x]}{ \sqrt{\mathrm{Var}[x] + \epsilon}} * \gamma + \beta
 
     The mean and standard-deviation are calculated per-dimension separately
-    for each object in a mini-batch. Gamma and beta are learnable parameter vectors
+    for each object in a mini-batch. :math:`\gamma` and :math:`\beta` are learnable parameter vectors
     of size C (where C is the input size) if :attr:`affine` is ``True``.
 
     By default, this layer uses instance statistics computed from input data in
@@ -170,9 +233,18 @@ class InstanceNorm3d(_InstanceNorm):
         This :attr:`momentum` argument is different from one used in optimizer
         classes and the conventional notion of momentum. Mathematically, the
         update rule for running statistics here is
-        :math:`\hat{x}_\text{new} = (1 - \text{momentum}) \times \hat{x}_\text{new} + \text{momemtum} \times x_t`,
+        :math:`\hat{x}_\text{new} = (1 - \text{momentum}) \times \hat{x} + \text{momemtum} \times x_t`,
         where :math:`\hat{x}` is the estimated statistic and :math:`x_t` is the
         new observed value.
+
+    .. note::
+        :class:`InstanceNorm3d` and :class:`LayerNorm` are very similar, but
+        have some subtle differences. :class:`InstanceNorm3d` is applied
+        on each channel of channeled data like 3D models with RGB color, but
+        :class:`LayerNorm` is usually applied on entire sample and often in NLP
+        tasks. Additionaly, :class:`LayerNorm` applies elementwise affine
+        transform, while :class:`InstanceNorm3d` usually don't apply affine
+        transform.
 
     Args:
         num_features: :math:`C` from an expected input of size
@@ -180,7 +252,8 @@ class InstanceNorm3d(_InstanceNorm):
         eps: a value added to the denominator for numerical stability. Default: 1e-5
         momentum: the value used for the running_mean and running_var computation. Default: 0.1
         affine: a boolean value that when set to ``True``, this module has
-            learnable affine parameters. Default: ``True``
+            learnable affine parameters, initialized the same way as done for batch normalization.
+            Default: ``False``.
         track_running_stats: a boolean value that when set to ``True``, this
             module tracks the running mean and variance, and when set to ``False``,
             this module does not track such statistics and always uses batch
@@ -190,18 +263,20 @@ class InstanceNorm3d(_InstanceNorm):
         - Input: :math:`(N, C, D, H, W)`
         - Output: :math:`(N, C, D, H, W)` (same shape as input)
 
-    Examples:
+    Examples::
+
         >>> # Without Learnable Parameters
         >>> m = nn.InstanceNorm3d(100)
         >>> # With Learnable Parameters
         >>> m = nn.InstanceNorm3d(100, affine=True)
-        >>> input = autograd.Variable(torch.randn(20, 100, 35, 45, 10))
+        >>> input = torch.randn(20, 100, 35, 45, 10)
         >>> output = m(input)
 
     .. _`Instance Normalization: The Missing Ingredient for Fast Stylization`:
         https://arxiv.org/abs/1607.08022
     """
 
+    @weak_script_method
     def _check_input_dim(self, input):
         if input.dim() != 5:
             raise ValueError('expected 5D input (got {}D input)'

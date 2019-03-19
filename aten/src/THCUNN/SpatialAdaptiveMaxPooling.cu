@@ -1,7 +1,8 @@
-#include "THCUNN.h"
-#include "THCHalf.h"
-#include "THCHalfAutoNumerics.cuh"
-#include "THCAtomics.cuh"
+#include <THCUNN/THCUNN.h>
+#include <TH/THHalf.h>
+#include <THCUNN/THCHalfAutoNumerics.cuh>
+#include <THC/THCAtomics.cuh>
+#include <THC/THCTensor.hpp>
 
 #define CUDA_MAX_THREADS 1024   // this is safe, in reality 256 is our limit
 
@@ -65,7 +66,7 @@ __global__ void adaptivemaxpool(T *input, T *output, THCIndex_t *indices,
       for(ih = 0; ih < kH; ih++) {
         for(iw = 0; iw < kW; iw++) {
           T val = ptr_input[iw*istrideW];
-          if (val > max) {
+          if ((val > max) || THCNumerics<T>::isnan(val)) {
             max = val;
             argmax = (ih+istartH)*isizeW + iw+istartW;
           }
@@ -74,7 +75,7 @@ __global__ void adaptivemaxpool(T *input, T *output, THCIndex_t *indices,
       }
       // Update output and argmax
       *ptr_output = max;
-      *ptr_ind = argmax + TH_INDEX_BASE;
+      *ptr_ind = argmax;
     }
   }
 }
@@ -118,7 +119,7 @@ __global__ void adaptivemaxgradinput(T *gradInput, T *gradOutput, THCIndex_t *in
       THCIndex_t *ptr_ind = indices + oh*osizeW + ow;
       T z = *ptr_gradOutput;
 
-      int argmax = (*ptr_ind) - TH_INDEX_BASE;
+      int argmax = (*ptr_ind);
 
       gradInput[argmax] += z;
     }
@@ -165,7 +166,7 @@ __global__ void atomicadaptivemaxgradinput(
       THCIndex_t *ptr_ind = indices + oh*osizeW + ow;
       T z = *ptr_gradOutput;
 
-      int argmax = (*ptr_ind) - TH_INDEX_BASE;
+      int argmax = (*ptr_ind);
 
       // atomic add since different threads could update same variable
       atomicAdd(&(gradInput[argmax]), z);
@@ -173,7 +174,7 @@ __global__ void atomicadaptivemaxgradinput(
   }
 }
 
-#include "generic/SpatialAdaptiveMaxPooling.cu"
-#include "THCGenerateFloatTypes.h"
+#include <THCUNN/generic/SpatialAdaptiveMaxPooling.cu>
+#include <THC/THCGenerateFloatTypes.h>
 
 #undef CUDA_MAX_THREADS

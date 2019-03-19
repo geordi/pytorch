@@ -1,10 +1,10 @@
-#include <Python.h>
-#include "tensor_dtypes.h"
-#include "torch/csrc/Dtype.h"
-#include "torch/csrc/DynamicTypes.h"
-#include "torch/csrc/Exceptions.h"
-#include "torch/csrc/autograd/generated/VariableType.h"
-#include "torch/csrc/utils/tensor_types.h"
+#include <torch/csrc/python_headers.h>
+#include <torch/csrc/utils/tensor_dtypes.h>
+#include <torch/csrc/Dtype.h>
+#include <torch/csrc/DynamicTypes.h>
+#include <torch/csrc/Exceptions.h>
+#include <torch/csrc/autograd/generated/VariableType.h>
+#include <torch/csrc/utils/tensor_types.h>
 
 namespace torch { namespace utils {
 
@@ -30,6 +30,14 @@ static std::pair<std::string, std::string> getDtypeNames(at::ScalarType scalarTy
       return std::make_pair("int16", "short");
     case at::ScalarType::Half:
       return std::make_pair("float16", "half");
+    case at::ScalarType::ComplexHalf:
+      return std::make_pair("complex32", "");
+    case at::ScalarType::ComplexFloat:
+      return std::make_pair("complex64", "");
+    case at::ScalarType::ComplexDouble:
+      return std::make_pair("complex128", "");
+    case at::ScalarType::Bool:
+      return std::make_pair("bool", "");
     default:
       throw std::runtime_error("Unimplemented scalar type");
   }
@@ -37,64 +45,27 @@ static std::pair<std::string, std::string> getDtypeNames(at::ScalarType scalarTy
 
 void initializeDtypes() {
   auto torch_module = THPObjectPtr(PyImport_ImportModule("torch"));
-  if (!torch_module) python_error();
-  auto cuda_module = THPObjectPtr(PyImport_ImportModule("torch.cuda"));
-  if (!cuda_module) python_error();
-  auto sparse_module = THPObjectPtr(PyImport_ImportModule("torch.sparse"));
-  if (!sparse_module) python_error();
-  auto cuda_sparse_module = THPObjectPtr(PyImport_ImportModule("torch.cuda.sparse"));
-  if (!cuda_sparse_module) python_error();
-  auto& context = at::globalContext();
-  for (auto type_pair : torch::utils::all_declared_types()) {
-    at::Backend backend;
-    at::ScalarType scalarType;
-    std::tie(backend, scalarType) = type_pair;
+  if (!torch_module) throw python_error();
+
+#define DEFINE_SCALAR_TYPE(_1,n,_2) at::ScalarType::n,
+
+  at::ScalarType all_scalar_types[] = {
+    AT_FORALL_SCALAR_TYPES_WITH_COMPLEX(DEFINE_SCALAR_TYPE)
+  };
+
+  for (at::ScalarType scalarType: all_scalar_types) {
     std::string primary_name, legacy_name;
     std::tie(primary_name, legacy_name) = getDtypeNames(scalarType);
-    PyObject *module = nullptr;
-    bool is_cuda, is_sparse;
-    switch (backend) {
-      case at::kCPU: {
-        module = torch_module.get();
-        is_cuda = false;
-        is_sparse = false;
-        break;
-      }
-      case at::kCUDA: {
-        module = cuda_module.get();
-        is_cuda = true;
-        is_sparse = false;
-        break;
-      }
-      case at::kSparseCPU: {
-        module = sparse_module.get();
-        is_cuda = false;
-        is_sparse = true;
-        break;
-      }
-      case at::kSparseCUDA: {
-        module = cuda_sparse_module.get();
-        is_cuda = true;
-        is_sparse = true;
-        break;
-      }
-      default: throw std::runtime_error("Unimplemented backend");
-    }
-    // use this rather than context.getType() because getType throws exceptions.
-    auto baseType = context.type_registry[static_cast<int>(backend)][static_cast<int>(scalarType)].get();
-    auto type = baseType ? torch::autograd::VariableType::getType(*baseType) : nullptr;
-    std::string name = std::string(PyModule_GetName(module)) + '.' + primary_name;
-    PyObject *dtype = THPDtype_New(type, name, is_cuda, is_sparse);
-    if (type) {
-      torch::registerDtypeObject((THPDtype*)dtype, *type);
-    }
+    std::string name = std::string(PyModule_GetName(torch_module.get())) + '.' + primary_name;
+    PyObject *dtype = THPDtype_New(scalarType, name);
+    torch::registerDtypeObject((THPDtype*)dtype, scalarType);
     Py_INCREF(dtype);
-    if (PyModule_AddObject(module, primary_name.c_str(), dtype) != 0) {
+    if (PyModule_AddObject(torch_module.get(), primary_name.c_str(), dtype) != 0) {
       throw python_error();
     }
     if (legacy_name != "") {
       Py_INCREF(dtype);
-      if (PyModule_AddObject(module, legacy_name.c_str(), dtype) != 0) {
+      if (PyModule_AddObject(torch_module.get(), legacy_name.c_str(), dtype) != 0) {
         throw python_error();
       }
     }

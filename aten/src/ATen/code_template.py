@@ -11,23 +11,24 @@ import re
 
 
 class CodeTemplate(object):
-    substitution_str = '(^[^\n\S]*)?\$([^\d\W]\w*|\{,?[^\d\W]\w*\,?})'
+    substitution_str = r'(^[^\n\S]*)?\$([^\d\W]\w*|\{,?[^\d\W]\w*\,?})'
 
     # older versions of Python have a bug where \w* does not work,
     # so we need to replace with the non-shortened version [a-zA-Z0-9_]*
     # https://bugs.python.org/issue18647
 
-    substitution_str = substitution_str.replace('\w', '[a-zA-Z0-9_]')
+    substitution_str = substitution_str.replace(r'\w', r'[a-zA-Z0-9_]')
 
     subtitution = re.compile(substitution_str, re.MULTILINE)
 
     @staticmethod
     def from_file(filename):
         with open(filename, 'r') as f:
-            return CodeTemplate(f.read())
+            return CodeTemplate(f.read(), filename)
 
-    def __init__(self, pattern):
+    def __init__(self, pattern, filename=""):
         self.pattern = pattern
+        self.filename = filename
 
     def substitute(self, env={}, **kwargs):
         def lookup(v):
@@ -50,7 +51,9 @@ class CodeTemplate(object):
                     comma_after = ', '
                     key = key[:-1]
             v = lookup(key)
-            if indent is not None and isinstance(v, list):
+            if indent is not None:
+                if not isinstance(v, list):
+                    v = [v]
                 return indent_lines(indent, v)
             elif isinstance(v, list):
                 middle = ', '.join([str(x) for x in v])
@@ -58,7 +61,7 @@ class CodeTemplate(object):
                     return middle
                 return comma_before + middle + comma_after
             else:
-                return (indent or '') + str(v)
+                return str(v)
         return self.subtitution.sub(replace, self.pattern)
 
 

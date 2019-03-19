@@ -1,24 +1,23 @@
 #pragma once
 
-#include <Python.h>
-#include "ATen/ATen.h"
+#include <ATen/ATen.h>
+#include <torch/csrc/python_headers.h>
+#include <torch/csrc/WindowsTorchApiMacro.h>
 
 const int DTYPE_NAME_LEN = 64;
 
-struct THPDtype {
+struct TORCH_API THPDtype {
   PyObject_HEAD
-  at::Type *cdata;
+  at::ScalarType scalar_type;
   char name[DTYPE_NAME_LEN + 1];
-  bool is_cuda;
-  bool is_sparse;
 };
 
-extern PyTypeObject THPDtypeType;
+TORCH_API extern PyTypeObject THPDtypeType;
 
 inline bool THPDtype_Check(PyObject *obj) {
   return Py_TYPE(obj) == &THPDtypeType;
 }
 
-PyObject * THPDtype_New(at::Type* cdata, const std::string& name, bool is_cuda, bool is_sparse);
+PyObject * THPDtype_New(at::ScalarType scalar_type, const std::string& name);
 
-bool THPDtype_init(PyObject *module);
+void THPDtype_init(PyObject *module);
